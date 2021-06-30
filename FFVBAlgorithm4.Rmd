@@ -94,7 +94,7 @@ h(\theta) &=& \log(p(\mu)p(\sigma^2)p(y~\mu, \sigma^2)) \\
 # Just extracting d13C values
 y <- y
 n <- length(y)
-n_param <- 4 (in this case as we are using Normal dist and gamma dist - so 4 hyperparameters)
+n_param <- 4 #(in this case as we are using Normal dist and gamma dist - so 4 hyperparameters)
 
 
 
@@ -125,7 +125,7 @@ alpha_sig[1] <- 2
 beta_sig[1] <- 5
 
 mu[1, ] <- rnorm(S, mean = mu_mu[1], sd = sigma_sq_mu[1])
-sigma_sq[1, ] <- rinvgamma(S, alpha_sig[1], scale = beta_sig[1])
+sigma_sq[1, ] <- invgamma::rinvgamma(S, shape = alpha_sig[1], scale = beta_sig[1])
 
 
 # Storage for items in loop
@@ -219,29 +219,6 @@ for (i in 2:n_iter) {
 }
 
 
-plot(mu_mu)
-plot(sigma_sq_mu)
-plot(mu[1, ])
-plot(sigma_sq[3, ])
-plot(h_theta)
-plot(log_q_lambda_theta)
-plot(delta_lqlt[, 1])
-plot(LB[2, , 4])
-plot(h_theta - log_q_lambda_theta)
-#x <- seq(-10, 10, length = length(mu_mu)) * sqrt(mean(sigma_sq_mu)) + mean(mu_mu)
-#hx <- rnorm(2000, mean(mu_mu[4000:5000]), mean(sqrt((sigma_sq_mu[4000:5000]))))
-#ffvbmean<-plot(x, hx)
-
-plot(alpha_sig)
-plot(beta_sig)
-
-
-
-#ffvbsigma<-plotInvGamma(((mean(alpha_sig[8000:9999]))), ((mean(beta_sig[8000:9999]))))
-# png("sigma_is_converging.jpeg")
-#mean(beta_sig / (alpha_sig - 1))
-
-# dev.off()#mean of sigma^2
 ```
 
 
@@ -287,10 +264,6 @@ model_run = jags(data = model_data,
 print(model_run)
 
 
-#mu is approx -20.9 - similar to above
-#sigma is 2.27 - again similar
-#rhat values all look good - 1.003 is the highest
-
 
 ```
 
@@ -300,36 +273,22 @@ plot
 mycol <- rgb(0, 0, 255, max = 255, alpha = 125, names = "blue50")
 mycol2 <- rgb(255, 0, 0, max = 255, alpha = 125)
 
-#png("FFVB_vs_JAGS.jpeg")
+
 
 hx <- rnorm(8000, mean(mu_mu[12000:15000]), sqrt(mean((sigma_sq_mu[12000:15000]))))
 hist(hx)
 
 hist((model_run$BUGSoutput$sims.list$mu), col=mycol2)
 hist(hx, col = mycol, add=TRUE, alpha = 0.5, breaks = 10)
-#dev.off()
 
-#sample<-rinvgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
 
 samplegamma<-rgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
 
-
-#png("tau_FFVB_JAGS.jpeg")
-#hist((model_run$BUGSoutput$sims.list$sigma), col= mycol2, breaks = 10)
-#hist(sqrt(sample), add=TRUE, col=mycol, breaks =20)
-#dev.off()
-
-#png("tau_FFVB_JAGS.jpeg")
 hist((model_run$BUGSoutput$sims.list$tau), col= mycol2, breaks = 10)
 hist((samplegamma), add=TRUE, col=mycol, breaks =10)
-#dev.off()
 
-#hist(samplegamma)
-
-#hist(sample, xlim=c(0, 10), breaks = 10)
 
 ```
-
 
 
 
