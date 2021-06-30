@@ -1,5 +1,5 @@
 ---
-title: "FFVBAlgorithm4"
+title: "FixedFormVBAlgorithm"
 author: "Emma Govan"
 date: "6/11/2021"
 output: html_document
