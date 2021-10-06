@@ -1,0 +1,338 @@
+---
+title: "Model 1"
+author: "Emma Govan"
+date: "10/6/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(invgamma)
+library(bayesAB)
+library(R2jags)
+library(progress)
+
+
+#Maths for algorithm 4: from [here](https://vbayeslab.github.io/VBLabDocs/tutorial/ffvb)
+
+```
+
+
+Generate $\theta_S \sim q_{\lambda^{(t)}(\theta)}, s=1,...S$
+
+Compute the unbiased estimator the the LB gradient
+
+$$\nabla_\lambda{LB}(\lambda^{(0)}) = \frac{1}{S}\sum_{s=1}^S\nabla_\lambda[\log(q_\lambda(\theta_s))] \circ(h_\lambda(\theta_s))$$
+Use this to get starting values for: 
+\begin{eqnarray}
+g_0 &=& \nabla_\lambda{LB}(\lambda^{(t)}) \\
+v_0 &=& (g_0)^2 \\
+\bar{g} &=& g_0 \\
+\bar{v} &=& v_0 \\
+\end{eqnarray}
+
+Also estimate c using these values.
+
+Then:
+Generate $\theta_S \sim q_{\lambda^{(t)}(\theta)}, s=1,...S$
+
+Calculate:
+
+$$g_t = \nabla_\lambda{LB}(\lambda^{(t)}) = \frac{1}{S}\sum_{s=1}^S\nabla_\lambda[\log(q_\lambda(\theta_s))] \circ(h_\lambda(\theta_s) -c)$$
+
+Where $$c = \frac{Cov(\nabla_\lambda[\log(q_\lambda(\theta_s))](h_\lambda(\theta_s),\nabla_\lambda[\log(q_\lambda(\theta_s))])}{ Var(\nabla_\lambda[\log(q_\lambda(\theta_s))])}$$
+
+Compute $v_t = (g_t)^2$ and
+\begin{eqnarray}
+\bar{g} &=& \beta_1\bar{g} + (1-\beta_1)g_t \\
+\bar{v} &=& \beta_2\bar{v} + (1-\beta_2)v_t \\
+\end{eqnarray}
+
+Then update $\lambda^{(t+1)} = \lambda^{(t)} + \alpha_t*\frac{\bar{g}}{\sqrt{\bar{v}}}$
+
+Where $\alpha_t$ is a learning rate.
+
+$\alpha_t = min(\epsilon_0, \epsilon_0\frac{\tau}{t}$
+
+For a fixed learning rate $\epsilon_0$ and some threshhold $\tau$
+
+
+
+For this model
+$y \sim N(\mu, \sigma^2)$
+$\mu \sim N(\mu_\mu, \sigma^2_\mu)$
+$\sigma^2 \sim InvGa(\alpha_{\sigma^2}, \beta_{\sigma^2})$
+
+
+$\theta = \mu, \sigma^2$
+$\lambda = (\mu_\mu, \sigma^2_\mu, \alpha_{\sigma^2}, \beta_{\sigma^2})^T$
+
+\begin{eqnarray}
+h(\theta) &=& \log(p(\mu)p(\sigma^2)p(y~\mu, \sigma^2)) \\
+&=& -\frac{n+1}{2}\log{2\pi} - 0.5\log(\sigma_0^2) +\alpha_0\log(\beta_0) -\log\Gamma(\alpha_0)-(\frac{n}{2}+\alpha_0+1)\log(\sigma^2) -\frac{\beta_0}{\sigma^2}-\frac{1}{2\sigma^2}\sum_{i=1}^n(y_i-\mu)^2\\
+
+\log{q_\lambda(\theta)} &=& \alpha_{\sigma^2}\log(\beta_{\sigma^2}) - \log\Gamma(\alpha_{\sigma^2}+1) - (\alpha_{\sigma^2} +1) \log\sigma^2 - \frac{\beta_{\sigma^2}}{\sigma^2} - 0.5\log(2\pi)-0.5\log(\sigma_\mu^2) - \frac{(\mu-\mu_\mu)^2}{2\sigma_\mu^2}\\
+
+\nabla_\lambda\log{q_\lambda}(\theta) &=& (\frac{\mu-\mu_\mu}{\sigma_\mu^2}, -\frac{1}{2\sigma_\mu^2} + \frac{\mu-\mu_\mu^2}{2\sigma_\mu^4}, \log\beta_{\sigma^2} - \frac{\Gamma'(\alpha_{\sigma^2})}{\Gamma(\alpha_{\sigma^2})} - \log\sigma^2, \frac{\alpha_{\sigma^2}}{\beta_{\sigma^2}} - \frac{1}{\sigma^2}) \\
+\end{eqnarray}
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+y <- c(11,12,8,10,9,8,9,10,13,7)
+n <- length(y)
+n_param <- 4
+
+
+
+# number of iterations
+n_iter <- 15000
+S <- 100
+pb <- progress_bar$new(total = n_iter)
+
+# Setting up storage for parameters:
+# These are a matrix so we can do multiple samples for each
+mu <- matrix(NA, nrow = n_iter, ncol = S)
+sigma_sq <- matrix(NA, nrow = n_iter, ncol = S)
+
+# Storage for hyperparameters
+mu_mu <- c(rep(NA, n_iter))
+sigma_sq_mu <- c(rep(NA, n_iter))
+alpha_sig <- c(rep(NA, n_iter))
+beta_sig <- c(rep(NA, n_iter))
+
+# Also need starting values
+# Starting values
+
+sigma_sq[1] <- var(y)
+
+mu_mu[1] <- mean(y)
+sigma_sq_mu[1] <- 4
+alpha_sig[1] <- 2
+beta_sig[1] <- 5
+
+mu[1, ] <- rnorm(S, mean = mu_mu[1], sd = sigma_sq_mu[1])
+sigma_sq[1, ] <- rinvgamma(S, alpha_sig[1], scale = beta_sig[1])
+
+
+# Storage for items in loop
+
+h_theta <- c(rep(NA, n_iter))
+log_q_lambda_theta <- c(rep(NA, n_iter))
+delta_lqlt <- matrix(NA, nrow = n_iter, ncol = n_param)
+sum1 <- c(rep(NA, n_iter))
+sum2 <- c(rep(NA, n_iter))
+sum3 <- c(rep(NA, n_iter))
+sum4 <- c(rep(NA, n_iter))
+gmu <- c(rep(NA, n_iter))
+vmu <- c(rep(NA, n_iter))
+gsig <- c(rep(NA, n_iter))
+vsig <- c(rep(NA, n_iter))
+ga <- c(rep(NA, n_iter))
+va <- c(rep(NA, n_iter))
+gb <- c(rep(NA, n_iter))
+vb <- c(rep(NA, n_iter))
+
+
+LB <- array(rep(NA, n_iter * n_param * S), dim = c(n_iter, S, n_param))
+
+
+#Starting values
+gmu[1] <- -22.6
+vmu[1] <- (-22.6)^2
+gsig[1] <- (-0.5)
+vsig[1] <- (-0.5)^2
+ga[1] <- (157)
+va[1] <- (157)^2
+gb[1] <- (-225)
+vb[1] <- (-225)^2
+
+convar <- c(rep(NA, n_iter))
+convar[1] <- -146.7812
+
+
+
+
+for (i in 2:n_iter) {
+   pb$tick()
+  mu[i, ] <- rnorm(S, mu_mu[i - 1], sqrt(sigma_sq_mu[i - 1]))
+  sigma_sq[i, ] <- rinvgamma(S, shape = alpha_sig[i - 1], rate = beta_sig[i - 1])
+
+  for (j in 1:S) {
+    # For each randomly sampled mu and sigma-squared we generate an LB
+    h_theta[i] <- -(((n + 1) / 2) * log(2 * pi)) - (0.5 * log(sigma_sq_mu[1])) - (((mu[i - 1, j] - mu_mu[1])^2) / (2 * sigma_sq_mu[1])) + (alpha_sig[1] * log(beta_sig[1])) - (log(gamma(alpha_sig[1]))) - ((n / 2 + alpha_sig[1] + 1) * log(sigma_sq[i - 1, j])) - (beta_sig[1] / sigma_sq[i - 1, j]) - ((1 / (2 * sigma_sq[i - 1, j])) * (sum((y - mu[i - 1, j])^2)))
+
+    log_q_lambda_theta[i] <- (alpha_sig[i - 1] * log(beta_sig[i - 1])) - log(gamma(alpha_sig[i - 1])) - ((alpha_sig[i - 1] + 1) * log(sigma_sq[i - 1, j])) - (beta_sig[i - 1] / sigma_sq[i - 1, j]) - (0.5 * log(2 * pi)) - (0.5 * log(sigma_sq_mu[i - 1])) - (((mu[i - 1, j] - mu_mu[i - 1])^2) / (2 * sigma_sq_mu[i - 1]))
+
+    delta_lqlt[i, ] <- c((mu[i - 1, j] - mu_mu[i - 1]) / sigma_sq_mu[i - 1], -(1 / (2 * sigma_sq_mu[i - 1])) + (((mu[i - 1, j] - mu_mu[i - 1])^2) / (2 * (sigma_sq_mu[i - 1])^2)), log(beta_sig[i - 1]) - digamma(alpha_sig[i - 1]) - log(sigma_sq[i - 1, j]), (alpha_sig[i - 1]) / (beta_sig[i - 1]) - (1 / (sigma_sq[i - 1, j])))
+
+
+    LB[i, j, ] <- (delta_lqlt[i, ]) * ((h_theta[i] - log_q_lambda_theta[i]) - convar[i-1])
+    convar[i] <- (cov((delta_lqlt[i, ]*(h_theta[i]-log_q_lambda_theta[i])), delta_lqlt[i,]))/(var(delta_lqlt[i,]))
+  }
+
+  # For each iteration we take 100 samples - here we get the average of those samples for each parameter
+
+  sum1[i] <- 1 / S * sum(LB[i, , 1]) # for mu_mu
+  sum2[i] <- 1 / S * sum(LB[i, , 2]) # for sigma_sq_mu
+  sum3[i] <- 1 / S * sum(LB[i, , 3]) # for alpha_sig
+  sum4[i] <- 1 / S * sum(LB[i, , 4]) # for beta_sig
+  
+  
+  gmu[i] <- 0.5 * gmu[i - 1] + (1 - 0.5) * sum1[i]
+
+  vmu[i] <- 0.5 * vmu[i - 1] + (1 - 0.5) * (sum1[i]^2)
+
+  gsig[i] <- 0.3 * gsig[i - 1] + (1 - 0.3) * sum2[i]
+
+  vsig[i] <- 0.3 * vsig[i - 1] + (1 - 0.3) * (sum2[i]^2)
+  
+  ga[i] <- 0.3 * ga[i - 1] + (1 - 0.3) * (sum3[i])
+  
+  va[i] <- 0.3 * va[i-1] + (1-0.3) * (sum3[i]^2)
+  
+  gb[i] <- 0.5 * gb[i - 1] + (1 - 0.5) * (sum4[i])
+  
+  vb[i] <- 0.5* vb[i-1] + (1-0.5) * (sum4[i]^2)
+
+
+
+
+  # update hyperparameters
+  mu_mu[i] <- mu_mu[i - 1] + 0.01 * (gmu[i]/(sqrt(vmu[i])))
+  sigma_sq_mu[i] <- sigma_sq_mu[i - 1] + 0.0004 * (gsig[i]/(sqrt(vsig[i])))
+  alpha_sig[i] <- alpha_sig[i - 1] + 0.025 * (ga[i]/(sqrt(va[i])))
+  beta_sig[i] <- beta_sig[i - 1] + 0.5 * (gb[i]/(sqrt(vb[i])))
+}
+
+
+plot(mu_mu)
+plot(sigma_sq_mu)
+plot(mu[1, ])
+plot(sigma_sq[3, ])
+plot(h_theta)
+plot(log_q_lambda_theta)
+plot(delta_lqlt[, 1])
+plot(LB[2, , 4])
+plot(h_theta - log_q_lambda_theta)
+#x <- seq(-10, 10, length = length(mu_mu)) * sqrt(mean(sigma_sq_mu)) + mean(mu_mu)
+#hx <- rnorm(2000, mean(mu_mu[4000:5000]), mean(sqrt((sigma_sq_mu[4000:5000]))))
+#ffvbmean<-plot(x, hx)
+
+plot(alpha_sig)
+plot(beta_sig)
+
+
+
+#ffvbsigma<-plotInvGamma(((mean(alpha_sig[8000:9999]))), ((mean(beta_sig[8000:9999]))))
+# png("sigma_is_converging.jpeg")
+#mean(beta_sig / (alpha_sig - 1))
+
+# dev.off()#mean of sigma^2
+```
+
+
+
+# Compare with JAGS
+```{r}
+model_code = '
+model
+{
+  # Likelihood
+  for (i in 1:n) {
+    x[i] ~ dnorm(mu, tau)
+  }
+
+  # Priors
+  mu ~ dnorm(-20.5, 100^-2)
+  tau ~ dgamma(2,5)
+}
+'
+
+# Set up the data - these match the data objects in the jags code
+model_data = list(n = length(y),
+                  x = y)
+
+# Choose which parameters to save
+model_parameters = c('mu', 'tau')
+
+
+
+# Run the model
+model_run = jags(data = model_data,
+                 parameters.to.save = model_parameters,
+                 model.file=textConnection(model_code), 
+                 n.chains=4, # Number of different starting positions
+                 n.iter=12000, # Number of iterations
+                 n.burnin=2000, # Number of iterations to remove at start
+                 n.thin=5) # Amount of thinning)
+
+
+
+
+# Look at the output
+print(model_run)
+
+
+#mu is approx -20.9 - similar to above
+#sigma is 2.27 - again similar
+#rhat values all look good - 1.003 is the highest
+
+
+```
+
+plot
+
+mu looks good
+Sigma seems a bit too high
+```{r}
+mycol <- rgb(0, 0, 255, max = 255, alpha = 125, names = "blue50")
+mycol2 <- rgb(255, 0, 0, max = 255, alpha = 125)
+
+#png("FFVB_vs_JAGS.jpeg")
+
+hx <- rnorm(8000, mean(mu_mu[12000:15000]), sqrt(mean((sigma_sq_mu[12000:15000]))))
+hist(hx)
+
+hist((model_run$BUGSoutput$sims.list$mu), col=mycol2)
+hist(hx, col = mycol, add=TRUE, alpha = 0.5, breaks = 10)
+#dev.off()
+
+#sample<-rinvgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
+
+samplegamma<-rgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
+
+
+#png("tau_FFVB_JAGS.jpeg")
+#hist((model_run$BUGSoutput$sims.list$sigma), col= mycol2, breaks = 10)
+#hist(sqrt(sample), add=TRUE, col=mycol, breaks =20)
+#dev.off()
+
+#png("tau_FFVB_JAGS.jpeg")
+hist((model_run$BUGSoutput$sims.list$tau), col= mycol2, breaks = 10)
+hist((samplegamma), add=TRUE, col=mycol, breaks =10)
+#dev.off()
+
+#hist(samplegamma)
+
+#hist(sample, xlim=c(0, 10), breaks = 10)
+
+```
+
+
+
+
+
+
+
+
