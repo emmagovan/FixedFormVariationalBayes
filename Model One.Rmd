@@ -6,7 +6,7 @@ output: html_document
 ---
 
 
-```{r setup, include=FALSE}
+```{r setup}
 knitr::opts_chunk$set(echo = TRUE)
 library(ggplot2)
 library(invgamma)
@@ -14,17 +14,43 @@ library(bayesAB)
 library(R2jags)
 library(progress)
 
+y <- c(11,12,8,10,9,8,9,10,13,7)
+n <- length(y)
+n_param <- 4
 
-#Maths for algorithm 4: from [here](https://vbayeslab.github.io/VBLabDocs/tutorial/ffvb)
 
+
+# number of iterations
+n_iter <- 15000
+S <- 100
 ```
 
+## Introduction
+This file contains the maths and code for running a model through a Fixed Form Variational Bayes Algorithm.
+
+
+## Model
+$y \sim N(\mu, \sigma^2)$
+
+$\mu \sim N(\mu_\mu, \sigma^2_\mu)$
+
+$\sigma^2 \sim InvGa(\alpha_{\sigma^2}, \beta_{\sigma^2})$
+
+The priors for mu and sigma are Normal and inverse Gamma respectively. We we use the same distributions for the variational posteriors.
+
+
+## Variational Inference
+Maths for this algorithm: from [here](https://vbayeslab.github.io/VBLabDocs/tutorial/ffvb)
 
 Generate $\theta_S \sim q_{\lambda^{(t)}(\theta)}, s=1,...S$
 
 Compute the unbiased estimator the the LB gradient
 
 $$\nabla_\lambda{LB}(\lambda^{(0)}) = \frac{1}{S}\sum_{s=1}^S\nabla_\lambda[\log(q_\lambda(\theta_s))] \circ(h_\lambda(\theta_s))$$
+Where
+$$q_\lambda(\theta) = q(\mu)q(\sigma)$$
+$$h_\lambda(\theta) = log\left(\frac{p(y|\mu, \sigma)p(\mu)p(\sigma)}{q(\mu)q(\sigma)}\right)$$
+
 Use this to get starting values for: 
 \begin{eqnarray}
 g_0 &=& \nabla_\lambda{LB}(\lambda^{(t)}) \\
@@ -54,23 +80,72 @@ Then update $\lambda^{(t+1)} = \lambda^{(t)} + \alpha_t*\frac{\bar{g}}{\sqrt{\ba
 
 Where $\alpha_t$ is a learning rate.
 
-$\alpha_t = min(\epsilon_0, \epsilon_0\frac{\tau}{t}$
+$\alpha_t = min(\epsilon_0, \epsilon_0\frac{\tau}{t})$
 
 For a fixed learning rate $\epsilon_0$ and some threshhold $\tau$
 
 
 
-For this model
+
+
+## JAGS code for comparison
+```{r}
+model_code = '
+model
+{
+  # Likelihood
+  for (i in 1:n) {
+    x[i] ~ dnorm(mu, tau)
+  }
+
+  # Priors
+  mu ~ dnorm(-20.5, 100^-2)
+  tau ~ dgamma(1/2,1/5)
+}
+'
+
+# Set up the data - these match the data objects in the jags code
+model_data = list(n = length(y),
+                  x = y)
+
+# Choose which parameters to save
+model_parameters = c('mu', 'tau')
+
+
+
+# Run the model
+model_run = jags(data = model_data,
+                 parameters.to.save = model_parameters,
+                 model.file=textConnection(model_code), 
+                 n.chains=4, # Number of different starting positions
+                 n.iter=12000, # Number of iterations
+                 n.burnin=2000, # Number of iterations to remove at start
+                 n.thin=5) # Amount of thinning)
+
+
+
+
+# Look at the output
+print(model_run)
+```
+ac
+
+## Maths for this model
+
+
 $y \sim N(\mu, \sigma^2)$
+
 $\mu \sim N(\mu_\mu, \sigma^2_\mu)$
+
 $\sigma^2 \sim InvGa(\alpha_{\sigma^2}, \beta_{\sigma^2})$
 
 
 $\theta = \mu, \sigma^2$
+
 $\lambda = (\mu_\mu, \sigma^2_\mu, \alpha_{\sigma^2}, \beta_{\sigma^2})^T$
 
 \begin{eqnarray}
-h(\theta) &=& \log(p(\mu)p(\sigma^2)p(y~\mu, \sigma^2)) \\
+h(\theta) &=& \log(p(\mu)p(\sigma^2)p(y|\mu, \sigma^2)) \\
 &=& -\frac{n+1}{2}\log{2\pi} - 0.5\log(\sigma_0^2) +\alpha_0\log(\beta_0) -\log\Gamma(\alpha_0)-(\frac{n}{2}+\alpha_0+1)\log(\sigma^2) -\frac{\beta_0}{\sigma^2}-\frac{1}{2\sigma^2}\sum_{i=1}^n(y_i-\mu)^2\\
 
 \log{q_\lambda(\theta)} &=& \alpha_{\sigma^2}\log(\beta_{\sigma^2}) - \log\Gamma(\alpha_{\sigma^2}+1) - (\alpha_{\sigma^2} +1) \log\sigma^2 - \frac{\beta_{\sigma^2}}{\sigma^2} - 0.5\log(2\pi)-0.5\log(\sigma_\mu^2) - \frac{(\mu-\mu_\mu)^2}{2\sigma_\mu^2}\\
@@ -81,23 +156,8 @@ h(\theta) &=& \log(p(\mu)p(\sigma^2)p(y~\mu, \sigma^2)) \\
 
 
 
-
-
-
-
-
-
+## FFVB code for this model
 ```{r}
-
-y <- c(11,12,8,10,9,8,9,10,13,7)
-n <- length(y)
-n_param <- 4
-
-
-
-# number of iterations
-n_iter <- 15000
-S <- 100
 pb <- progress_bar$new(total = n_iter)
 
 # Setting up storage for parameters:
@@ -170,11 +230,11 @@ for (i in 2:n_iter) {
 
   for (j in 1:S) {
     # For each randomly sampled mu and sigma-squared we generate an LB
-    h_theta[i] <- -(((n + 1) / 2) * log(2 * pi)) - (0.5 * log(sigma_sq_mu[1])) - (((mu[i - 1, j] - mu_mu[1])^2) / (2 * sigma_sq_mu[1])) + (alpha_sig[1] * log(beta_sig[1])) - (log(gamma(alpha_sig[1]))) - ((n / 2 + alpha_sig[1] + 1) * log(sigma_sq[i - 1, j])) - (beta_sig[1] / sigma_sq[i - 1, j]) - ((1 / (2 * sigma_sq[i - 1, j])) * (sum((y - mu[i - 1, j])^2)))
+    h_theta[i] <- -(((n + 1) / 2) * log(2 * pi)) - (0.5 * log(sigma_sq_mu[1])) - (((mu[i, j] - mu_mu[1])^2) / (2 * sigma_sq_mu[1])) + (alpha_sig[1] * log(beta_sig[1])) - (log(gamma(alpha_sig[1]))) - ((n / 2 + alpha_sig[1] + 1) * log(sigma_sq[i, j])) - (beta_sig[1] / sigma_sq[i, j]) - ((1 / (2 * sigma_sq[i, j])) * (sum((y - mu[i, j])^2)))
 
-    log_q_lambda_theta[i] <- (alpha_sig[i - 1] * log(beta_sig[i - 1])) - log(gamma(alpha_sig[i - 1])) - ((alpha_sig[i - 1] + 1) * log(sigma_sq[i - 1, j])) - (beta_sig[i - 1] / sigma_sq[i - 1, j]) - (0.5 * log(2 * pi)) - (0.5 * log(sigma_sq_mu[i - 1])) - (((mu[i - 1, j] - mu_mu[i - 1])^2) / (2 * sigma_sq_mu[i - 1]))
+    log_q_lambda_theta[i] <- (alpha_sig[i - 1] * log(beta_sig[i - 1])) - log(gamma(alpha_sig[i - 1])) - ((alpha_sig[i - 1] + 1) * log(sigma_sq[i, j])) - (beta_sig[i - 1] / sigma_sq[i, j]) - (0.5 * log(2 * pi)) - (0.5 * log(sigma_sq_mu[i - 1])) - (((mu[i, j] - mu_mu[i - 1])^2) / (2 * sigma_sq_mu[i - 1]))
 
-    delta_lqlt[i, ] <- c((mu[i - 1, j] - mu_mu[i - 1]) / sigma_sq_mu[i - 1], -(1 / (2 * sigma_sq_mu[i - 1])) + (((mu[i - 1, j] - mu_mu[i - 1])^2) / (2 * (sigma_sq_mu[i - 1])^2)), log(beta_sig[i - 1]) - digamma(alpha_sig[i - 1]) - log(sigma_sq[i - 1, j]), (alpha_sig[i - 1]) / (beta_sig[i - 1]) - (1 / (sigma_sq[i - 1, j])))
+    delta_lqlt[i, ] <- c((mu[i, j] - mu_mu[i - 1]) / sigma_sq_mu[i - 1], -(1 / (2 * sigma_sq_mu[i - 1])) + (((mu[i, j] - mu_mu[i - 1])^2) / (2 * (sigma_sq_mu[i - 1])^2)), log(beta_sig[i - 1]) - digamma(alpha_sig[i - 1]) - log(sigma_sq[i, j]), (alpha_sig[i - 1]) / (beta_sig[i - 1]) - (1 / (sigma_sq[i, j])))
 
 
     LB[i, j, ] <- (delta_lqlt[i, ]) * ((h_theta[i] - log_q_lambda_theta[i]) - convar[i-1])
@@ -218,120 +278,41 @@ for (i in 2:n_iter) {
 
 plot(mu_mu)
 plot(sigma_sq_mu)
-plot(mu[1, ])
-plot(sigma_sq[3, ])
-plot(h_theta)
-plot(log_q_lambda_theta)
-plot(delta_lqlt[, 1])
-plot(LB[2, , 4])
-plot(h_theta - log_q_lambda_theta)
-#x <- seq(-10, 10, length = length(mu_mu)) * sqrt(mean(sigma_sq_mu)) + mean(mu_mu)
-#hx <- rnorm(2000, mean(mu_mu[4000:5000]), mean(sqrt((sigma_sq_mu[4000:5000]))))
-#ffvbmean<-plot(x, hx)
-
 plot(alpha_sig)
 plot(beta_sig)
 
 
-
-#ffvbsigma<-plotInvGamma(((mean(alpha_sig[8000:9999]))), ((mean(beta_sig[8000:9999]))))
-# png("sigma_is_converging.jpeg")
-#mean(beta_sig / (alpha_sig - 1))
-
-# dev.off()#mean of sigma^2
 ```
 
 
 
-# Compare with JAGS
-```{r}
-model_code = '
-model
-{
-  # Likelihood
-  for (i in 1:n) {
-    x[i] ~ dnorm(mu, tau)
-  }
-
-  # Priors
-  mu ~ dnorm(-20.5, 100^-2)
-  tau ~ dgamma(2,5)
-}
-'
-
-# Set up the data - these match the data objects in the jags code
-model_data = list(n = length(y),
-                  x = y)
-
-# Choose which parameters to save
-model_parameters = c('mu', 'tau')
-
-
-
-# Run the model
-model_run = jags(data = model_data,
-                 parameters.to.save = model_parameters,
-                 model.file=textConnection(model_code), 
-                 n.chains=4, # Number of different starting positions
-                 n.iter=12000, # Number of iterations
-                 n.burnin=2000, # Number of iterations to remove at start
-                 n.thin=5) # Amount of thinning)
-
-
-
-
-# Look at the output
-print(model_run)
-
-
-#mu is approx -20.9 - similar to above
-#sigma is 2.27 - again similar
-#rhat values all look good - 1.003 is the highest
-
-
-```
-
-plot
-
-mu looks good
-Sigma seems a bit too high
+## Comparison Plots
 ```{r}
 mycol <- rgb(0, 0, 255, max = 255, alpha = 125, names = "blue50")
 mycol2 <- rgb(255, 0, 0, max = 255, alpha = 125)
 
-#png("FFVB_vs_JAGS.jpeg")
 
+#Generate mu sample
 hx <- rnorm(8000, mean(mu_mu[12000:15000]), sqrt(mean((sigma_sq_mu[12000:15000]))))
-hist(hx)
 
+# Plot JAGS vs VB
 hist((model_run$BUGSoutput$sims.list$mu), col=mycol2)
 hist(hx, col = mycol, add=TRUE, alpha = 0.5, breaks = 10)
-#dev.off()
 
-#sample<-rinvgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
-
-samplegamma<-rgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
+# Generate sigma sample
+samplesigma<-rgamma(8000, shape = mean(alpha_sig[(n_iter-5000):n_iter]), rate = mean(beta_sig[(n_iter-5000):n_iter]))
 
 
-#png("tau_FFVB_JAGS.jpeg")
-#hist((model_run$BUGSoutput$sims.list$sigma), col= mycol2, breaks = 10)
-#hist(sqrt(sample), add=TRUE, col=mycol, breaks =20)
-#dev.off()
-
-#png("tau_FFVB_JAGS.jpeg")
+#Plot JAGS vs VB
 hist((model_run$BUGSoutput$sims.list$tau), col= mycol2, breaks = 10)
-hist((samplegamma), add=TRUE, col=mycol, breaks =10)
-#dev.off()
-
-#hist(samplegamma)
-
-#hist(sample, xlim=c(0, 10), breaks = 10)
+hist((samplesigma), add=TRUE, col=mycol, breaks =10)
 
 ```
 
 
 
-
+## Conclusions
+This model appears to be working well. For the next model I will add an extra fixed term into the error e.g. $\sigma^2 +5$ or something similar and leave everything else the same
 
 
 
