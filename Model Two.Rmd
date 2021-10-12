@@ -95,7 +95,7 @@ model
 {
   # Likelihood
   for (i in 1:n) {
-    x[i] ~ dnorm(mu, (sigmasq)^-1)
+    x[i] ~ dnorm(mu, (sigmasq+3)^-1)
   }
 
   # Priors
@@ -307,7 +307,7 @@ samplesigmasq<-rinvgamma(8000, shape = alpha_sig[n_iter], rate = beta_sig[n_iter
 
 #Plot JAGS vs VB
 hist(model_run$BUGSoutput$sims.list$sigmasq, col= mycol2, breaks = 100)
-hist(samplesigmasq +3, col=mycol, breaks =1000,  add = TRUE)
+hist(samplesigmasq, col=mycol, breaks =1000,  add = TRUE)
 
 
 ```
